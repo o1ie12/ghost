@@ -135,8 +135,8 @@ let overlayLevel = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.overlayWind
         let target: CGFloat = blur ? 0.97 : 0.6
         let ws = windows
         NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 40
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            ctx.duration = 30
+            ctx.timingFunction = CAMediaTimingFunction(name: .linear)
             for w in ws { w.animator().alphaValue = target }
         }
     }
@@ -486,7 +486,7 @@ struct GhostView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Today").font(.caption).foregroundStyle(.secondary)
                 Text("\(s.todayMin) min").font(.system(size: 40, weight: .semibold)).monospacedDigit()
-                Text("\(s.todayRounds) rounds  ·  \(s.todayAway) min away")
+                Text("\(s.todayRounds) \(s.todayRounds == 1 ? "round" : "rounds")  ·  \(s.todayAway) min away")
                     .font(.callout).foregroundStyle(.secondary)
             }
 
@@ -608,6 +608,12 @@ struct GhostView: View {
         registerHotKey()
     }
 
+    // Opening Ghost again (from Applications or Spotlight) shows its window.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        openWindow()
+        return false
+    }
+
     private func symbol(_ name: String) -> NSImage? {
         let img = NSImage(systemSymbolName: name, accessibilityDescription: "Ghost")?
             .withSymbolConfiguration(.init(pointSize: 12, weight: .regular))
@@ -657,7 +663,7 @@ struct GhostView: View {
     @objc private func skipBreak() { engine.skipBreak() }
     @objc private func quit() { engine.stop(); NSApp.terminate(nil) }
 
-    @objc private func openWindow() {
+    @objc func openWindow() {
         if window == nil {
             let w = NSWindow(contentViewController: NSHostingController(rootView: GhostView(store: .shared)))
             w.styleMask = [.titled, .closable, .fullSizeContentView]
@@ -692,7 +698,6 @@ defaults.register(defaults: [Key.focusMin: 25, Key.breakMin: 5, Key.longMin: 15,
 
 MainActor.assumeIsolated {
     let app = NSApplication.shared
-    app.setActivationPolicy(.accessory)   // menu bar only, no Dock icon
     let delegate = AppDelegate()
     app.delegate = delegate
 
