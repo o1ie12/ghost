@@ -266,7 +266,7 @@ func minutesText(_ seconds: Double) -> String { "\(Int((seconds / 60).rounded())
             focusName = app.localizedName ?? "your app"
         }
         guard !focusBundle.isEmpty else {
-            toast.show("Click into the app you want to focus on, then press Option + Space")
+            toast.show("Click into the app you want to focus on, then press ⌥ Space")
             return
         }
         phase = .focus
@@ -569,7 +569,7 @@ struct GhostView: View {
                         atLogin = SMAppService.mainApp.status == .enabled
                     }
                 }
-            Text("Option + Space starts or stops a round.")
+            Text("⌥ Space starts or stops a round.")
                 .font(.caption).foregroundStyle(.secondary)
                 .padding(.top, 6)
         }
@@ -636,24 +636,26 @@ struct GhostView: View {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
-        func add(_ title: String, _ action: Selector?) {
-            let i = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        // `shortcut` shows the global ⌥Space on the right, drawn by macOS like any menu shortcut.
+        func add(_ title: String, _ action: Selector?, shortcut: Bool = false) {
+            let i = NSMenuItem(title: title, action: action, keyEquivalent: shortcut ? " " : "")
+            if shortcut { i.keyEquivalentModifierMask = .option }
             i.target = self
             i.isEnabled = action != nil
             menu.addItem(i)
         }
         switch engine.phase {
         case .idle:
-            add("Start focus   Option Space", #selector(toggle))
+            add("Start focus", #selector(toggle), shortcut: !hotKeyTaken)
         case .focus:
             add("Focusing on \(engine.focusName)", nil)
-            add("Stop", #selector(toggle))
+            add("Stop", #selector(toggle), shortcut: !hotKeyTaken)
         case .rest:
             add("On a break", nil)
             add("Skip break", #selector(skipBreak))
-            add("Stop", #selector(toggle))
+            add("Stop", #selector(toggle), shortcut: !hotKeyTaken)
         }
-        if hotKeyTaken { add("Option Space is used by another app", nil) }
+        if hotKeyTaken { add("⌥ Space is used by another app", nil) }
         menu.addItem(.separator())
         add("Open Ghost", #selector(openWindow))
         add("Quit Ghost", #selector(quit))
