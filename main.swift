@@ -4,6 +4,8 @@
 // and start. A thin line at the screen edge shows the round. Leave what counts and, after a grace period,
 // the screen slowly dims (or blurs) until you come back. Pause, add five minutes, take a break early or
 // end the round any time. When a round ends, a small panel asks what's next (or it flows on its own).
+// Option + T opens the timer pill: drag its grip to set a length, click to start, and it stays as a
+// small countdown while the round runs (or hides, in Settings).
 //
 // Light by design: Ghost reacts to app switches, and one slow timer (every 2 s, with tolerance) runs only
 // during a session. Browser sites are read only when a focus has sites set (or site tracking is on), and
@@ -24,6 +26,7 @@ enum Key {
     static let sound = "sound", notify = "notify", barStyle = "barStyle"
     static let grace = "grace", dim = "dim", askFocus = "askFocus", appearance = "appearance"
     static let trackSites = "trackSites", recent = "recentFocus", schedulePath = "schedulePath"
+    static let pillDuring = "pillDuring", pillMin = "pillMin", pillX = "pillX", pillY = "pillY"
 }
 
 let defaults = UserDefaults.standard
@@ -491,11 +494,11 @@ enum EndKind { case focusDone(focus: Double, away: Double, long: Bool), breakDon
         begin(FocusTarget(name: app.localizedName ?? "Focus", apps: [id], appNames: [app.localizedName ?? id]))
     }
 
-    func begin(_ t: FocusTarget) {
+    func begin(_ t: FocusTarget, minutes: Double? = nil) {
         target = t
         roundsInCycle = 0
         Store.shared.addRecent(focusName)
-        beginFocus()
+        beginFocus(minutes: minutes)
     }
 
     func togglePause() { paused ? resume() : pause() }
@@ -973,6 +976,182 @@ struct EndView: View {
     }
 }
 
+// MARK: - Quick timer pill (drag the grip to set a length, then a small countdown while the round runs)
+
+let pillStretch: CGFloat = 2     // points of width per minute, so the bar follows your drag
+
+struct PillRing: View {
+    let progress: Double
+    var color: Color = Theme.clay
+    var body: some View {
+        ZStack {
+            Circle().stroke(Theme.hairline, lineWidth: 2.5)
+            Circle().trim(from: 0, to: max(0.02, min(1, progress)))
+                .stroke(color, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+        }
+        .frame(width: 18, height: 18)
+    }
+}
+
+struct PillView: View {
+    @ObservedObject var engine: Engine
+    let onStart: (Int) -> Void
+    let onClose: () -> Void
+    let onMore: () -> Void
+    let onMove: (_ ended: Bool) -> Void
+    let onSize: (CGSize) -> Void
+    @AppStorage(Key.pillMin) private var minutes = 25
+    @State private var dragFrom: Int?
+    @State private var moved = false
+
+    private var idle: Bool { engine.phase == .idle }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Button(action: side) {
+                Image(systemName: sideIcon).font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Theme.ink)
+                    .frame(width: 40, height: 40)
+                    .background(Circle().fill(Theme.bg))
+                    .overlay(Circle().strokeBorder(Theme.hairline, lineWidth: 1))
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .help(idle ? "Close" : (engine.paused ? "Resume" : "Pause"))
+
+            bar
+                .frame(height: 40)
+                .background(Capsule().fill(Theme.bg))
+                .overlay(Capsule().strokeBorder(Theme.hairline, lineWidth: 1))
+                .contentShape(Capsule())
+                .gesture(clickOrMove)
+                .contextMenu { menu }
+        }
+        .fixedSize()
+        .background(GeometryReader { g in
+            Color.clear.onAppear { onSize(g.size) }.onChange(of: g.size) { _, s in onSize(s) }
+        })
+    }
+
+    private var sideIcon: String {
+        if idle { return "xmark" }
+        if engine.phase == .ready { return "arrow.right" }
+        return engine.paused ? "play.fill" : "pause.fill"
+    }
+
+    private func side() {
+        switch engine.phase {
+        case .idle: onClose()
+        case .ready: engine.goOn()
+        case .focus, .rest: engine.togglePause()
+        }
+    }
+
+    @ViewBuilder private var bar: some View {
+        switch engine.phase {
+        case .idle:
+            HStack(spacing: 10) {
+                PillRing(progress: Double(minutes) / 120)
+                Text("\(minutes) min").font(.serif(15)).monospacedDigit().foregroundStyle(Theme.ink)
+                Spacer(minLength: 0)
+                grip
+            }
+            .padding(.leading, 14)
+            .frame(width: 150 + CGFloat(minutes) * pillStretch)
+        case .focus, .rest:
+            HStack(spacing: 10) {
+                PillRing(progress: engine.progress, color: engine.phase == .rest ? Theme.tertiary : Theme.clay)
+                TimelineView(.periodic(from: .now, by: 1)) { _ in
+                    Text(clock(engine.remaining)).font(.serif(15)).monospacedDigit().foregroundStyle(Theme.ink)
+                }
+                Text(engine.phase == .rest ? "Break" : engine.focusName)
+                    .font(.ui(12)).foregroundStyle(Theme.secondary).lineLimit(1).frame(maxWidth: 110, alignment: .leading)
+            }
+            .padding(.horizontal, 14)
+            .opacity(engine.paused ? 0.55 : 1)
+        case .ready:
+            HStack(spacing: 10) {
+                PillRing(progress: 1)
+                Text(engine.nextIsRest ? "Focus done" : "Break's over").font(.serif(15)).foregroundStyle(Theme.ink)
+            }
+            .padding(.horizontal, 14)
+        }
+    }
+
+    /// Three bars on the right: drag them to stretch the timer
+    private var grip: some View {
+        HStack(spacing: 3) {
+            ForEach(0..<3, id: \.self) { _ in Capsule().fill(Theme.tertiary).frame(width: 2.5, height: 14) }
+        }
+        .frame(width: 40, height: 40)
+        .contentShape(Rectangle())
+        .onHover { $0 ? NSCursor.resizeLeftRight.push() : NSCursor.pop() }
+        .highPriorityGesture(
+            DragGesture(minimumDistance: 0, coordinateSpace: .global)
+                .onChanged { g in
+                    let from = dragFrom ?? minutes
+                    dragFrom = from
+                    let raw = Double(from) + Double(g.translation.width / pillStretch)
+                    let m = min(120, max(5, Int((raw / 5).rounded()) * 5))
+                    if m != minutes {
+                        minutes = m
+                        NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+                    }
+                }
+                .onEnded { _ in dragFrom = nil }
+        )
+        .help("Drag to set the length")
+    }
+
+    /// A click starts (or pauses); a drag moves the pill
+    private var clickOrMove: some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { g in
+                if !moved && hypot(g.translation.width, g.translation.height) > 3 { moved = true }
+                if moved { onMove(false) }
+            }
+            .onEnded { _ in
+                if moved { onMove(true) } else { click() }
+                moved = false
+            }
+    }
+
+    private func click() {
+        switch engine.phase {
+        case .idle: onStart(minutes)
+        case .ready: engine.goOn()
+        case .focus, .rest: engine.togglePause()
+        }
+    }
+
+    @ViewBuilder private var menu: some View {
+        switch engine.phase {
+        case .idle:
+            Button("Start \(minutes) min") { onStart(minutes) }
+            Button("Focus with apps and sites…") { onMore() }
+            Divider()
+            Button("Close") { onClose() }
+        case .focus, .rest:
+            Button(engine.paused ? "Resume" : "Pause") { engine.togglePause() }
+            Button("Add 5 minutes") { engine.extend() }
+            if engine.phase == .focus { Button("Take a break now") { engine.breakNow() } }
+            Button(engine.phase == .focus ? "End round" : "End") { engine.stop() }
+            Divider()
+            Button("Hide pill") { onClose() }
+        case .ready:
+            Button(engine.nextIsRest ? "Start break" : "Start focus") { engine.goOn() }
+            Button("5 more minutes") { engine.extend() }
+            Button("End") { engine.stop() }
+        }
+    }
+
+    private func clock(_ r: TimeInterval) -> String {
+        let s = Int(ceil(r))
+        return "\(s / 60):" + String(format: "%02d", s % 60)
+    }
+}
+
 // MARK: - Stats for the window
 
 struct Stats {
@@ -1277,6 +1456,7 @@ struct SettingsView: View {
     @AppStorage(Key.barStyle) private var barStyle = "ring"
     @AppStorage(Key.edge) private var edge = "sand"
     @AppStorage(Key.appearance) private var appearance = "light"
+    @AppStorage(Key.pillDuring) private var pillDuring = "show"
     @State private var atLogin = SMAppService.mainApp.status == .enabled
 
     var body: some View {
@@ -1340,6 +1520,11 @@ struct SettingsView: View {
                         .pickerStyle(.segmented).labelsHidden().frame(width: 180)
                 }
                 divider
+                row("Timer pill during rounds") {
+                    Picker("", selection: $pillDuring) { Text("Show").tag("show"); Text("Hide").tag("hide") }
+                        .pickerStyle(.segmented).labelsHidden().frame(width: 140)
+                }
+                divider
                 row("Appearance") {
                     Picker("", selection: $appearance) { Text("Light").tag("light"); Text("Dark").tag("dark"); Text("System").tag("system") }
                         .pickerStyle(.segmented).labelsHidden().frame(width: 200)
@@ -1351,6 +1536,8 @@ struct SettingsView: View {
                 row("Start, pause or resume") { keys("⌥", "Space") }
                 divider
                 row("End the round") { keys("⌥", "⇧", "Space") }
+                divider
+                row("Quick timer (drag to set)") { keys("⌥", "T") }
             }
             Text("Plan suggestions come from Today (\(planFolder.path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))). Ghost writes ghost_status.json there so Claude can see your focus time.")
                 .font(.ui(11)).foregroundStyle(Theme.tertiary).fixedSize(horizontal: false, vertical: true)
@@ -1435,7 +1622,10 @@ struct SettingsView: View {
     private var item: NSStatusItem!
     private var window: NSWindow?
     private var startPanel: FloatingPanel?, endPanel: FloatingPanel?
-    private var hotKeys: [EventHotKeyRef?] = [nil, nil]
+    private var hotKeys: [EventHotKeyRef?] = [nil, nil, nil]
+    private var pill: FloatingPanel?
+    private var lastPhase = Engine.Phase.idle
+    private var moveStart: (mouse: NSPoint, origin: NSPoint)?
     private var hotKeyTaken = false
     private var styleObserver: NSObjectProtocol?
 
@@ -1447,7 +1637,7 @@ struct SettingsView: View {
         item.menu = menu
         item.button?.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
         item.button?.imagePosition = .imageLeading
-        engine.onChange = { [weak self] in self?.refreshItem() }
+        engine.onChange = { [weak self] in self?.refreshItem(); self?.phaseChanged() }
         engine.onRequestStart = { [weak self] in self?.showStart() }
         engine.onEnd = { [weak self] kind in self?.showEnd(kind) }
         engine.onHideEnd = { [weak self] in self?.endPanel?.orderOut(nil); self?.endPanel = nil }
@@ -1456,9 +1646,11 @@ struct SettingsView: View {
         }
         refreshItem()
         registerHotKeys()
+        watchPillKeys()
         Store.shared.refreshPlan()
         if CommandLine.arguments.contains("--window") { openWindow() }
         if CommandLine.arguments.contains("--start") { showStart() }
+        if CommandLine.arguments.contains("--pill") { showPill() }
     }
 
     // Opening Ghost again (from Applications or Spotlight) shows its window
@@ -1527,6 +1719,7 @@ struct SettingsView: View {
         switch engine.phase {
         case .idle:
             add("Start focus…", #selector(primary), key: " ", mods: .option)
+            add("Quick timer", #selector(togglePill), key: "t", mods: .option)
             if engine.lastApp != nil { add("Quick start on the app in front", #selector(quick)) }
             if !Store.shared.presets.isEmpty {
                 let sub = NSMenu()
@@ -1557,6 +1750,7 @@ struct SettingsView: View {
             add("5 more minutes", #selector(extend))
             add("End", #selector(stop), key: " ", mods: [.option, .shift])
         }
+        if engine.phase != .idle { add(pill?.isVisible == true ? "Hide timer pill" : "Show timer pill", #selector(togglePill), key: "t", mods: .option) }
         if hotKeyTaken { add("⌥ Space is used by another app", nil) }
         menu.addItem(.separator())
         add("Open Ghost", #selector(openWindow))
@@ -1620,10 +1814,136 @@ struct SettingsView: View {
         window?.makeKeyAndOrderFront(nil)
     }
 
+    // MARK: Timer pill
+
+    @objc func togglePill() {
+        if pill?.isVisible == true { hidePill() } else { showPill() }
+    }
+
+    func showPill() {
+        if pill == nil { pill = makePill() }
+        guard let p = pill else { return }
+        p.orderFrontRegardless()
+        if engine.phase == .idle { p.makeKey() }   // arrow keys and Return work without leaving your app
+    }
+
+    private func hidePill() {
+        pill?.orderOut(nil)
+        if engine.phase == .idle { engine.lastApp?.activate() }
+    }
+
+    /// Shows the pill when a round starts (if set to), hides it when the round ends
+    private func phaseChanged() {
+        let ph = engine.phase
+        guard ph != lastPhase else { return }
+        if ph == .idle { pill?.orderOut(nil) }
+        else if lastPhase == .idle {
+            if defaults.string(forKey: Key.pillDuring) == "hide" { pill?.orderOut(nil) } else { showPill() }
+        }
+        lastPhase = ph
+    }
+
+    private func quickTarget() -> FocusTarget {
+        if let app = engine.lastApp, let id = app.bundleIdentifier {
+            return FocusTarget(name: app.localizedName ?? "Focus", apps: [id], appNames: [app.localizedName ?? id])
+        }
+        return FocusTarget(name: "Focus")
+    }
+
+    private func makePill() -> FloatingPanel {
+        let view = PillView(engine: engine, onStart: { [weak self] m in
+            guard let self else { return }
+            self.engine.begin(self.quickTarget(), minutes: Double(m))
+            self.engine.lastApp?.activate()
+        }, onClose: { [weak self] in
+            self?.hidePill()
+        }, onMore: { [weak self] in
+            self?.pill?.orderOut(nil)
+            self?.showStart()
+        }, onMove: { [weak self] ended in
+            self?.movePill(ended: ended)
+        }, onSize: { [weak self] size in
+            self?.sizePill(size)
+        })
+        let p = FloatingPanel(contentRect: NSRect(x: 0, y: 0, width: 250, height: 40),
+                              styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        p.keyable = true
+        p.isOpaque = false
+        p.backgroundColor = .clear
+        p.hasShadow = true
+        p.level = .floating
+        p.hidesOnDeactivate = false
+        p.isReleasedWhenClosed = false
+        p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        let host = FirstClickHost(rootView: view)
+        var size = host.fittingSize                 // measure first, then size the panel by hand (it grows to the right)
+        if size.width < 10 || size.height < 10 { size = NSSize(width: 248, height: 40) }
+        host.sizingOptions = []
+        host.frame = NSRect(origin: .zero, size: size)
+        p.contentView = host
+        p.setContentSize(size)
+        p.setFrameOrigin(pillOrigin(for: size))
+        return p
+    }
+
+    /// Where the pill was left, or just under the menu bar in the middle of the screen
+    private func pillOrigin(for size: NSSize) -> NSPoint {
+        let saved = NSPoint(x: defaults.double(forKey: Key.pillX), y: defaults.double(forKey: Key.pillY))
+        if defaults.object(forKey: Key.pillX) != nil,
+           NSScreen.screens.contains(where: { $0.visibleFrame.insetBy(dx: -20, dy: -20).contains(NSRect(origin: saved, size: size)) }) {
+            return saved
+        }
+        let vf = NSScreen.main?.visibleFrame ?? .zero
+        return NSPoint(x: vf.midX - size.width / 2, y: vf.maxY - size.height - 16)
+    }
+
+    /// Grows to the right (the left edge stays put), so the grip stays under your pointer
+    private func sizePill(_ size: CGSize) {
+        guard let p = pill, size.width > 0, p.frame.size != size else { return }
+        let top = p.frame.maxY
+        p.setFrame(NSRect(x: p.frame.minX, y: top - size.height, width: size.width, height: size.height), display: true)
+    }
+
+    private func movePill(ended: Bool) {
+        guard let p = pill else { return }
+        if ended {
+            moveStart = nil
+            defaults.set(p.frame.minX, forKey: Key.pillX)
+            defaults.set(p.frame.minY, forKey: Key.pillY)
+            return
+        }
+        let mouse = NSEvent.mouseLocation
+        if moveStart == nil { moveStart = (mouse, p.frame.origin) }
+        guard let s = moveStart else { return }
+        p.setFrameOrigin(NSPoint(x: s.origin.x + mouse.x - s.mouse.x, y: s.origin.y + mouse.y - s.mouse.y))
+    }
+
+    /// While the pill is waiting: ← → (or ↑ ↓) change the length by 5 minutes, Return starts, Esc closes
+    private func watchPillKeys() {
+        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
+            guard let self, let p = self.pill, p.isKeyWindow, p.isVisible, self.engine.phase == .idle else { return e }
+            let m = defaults.integer(forKey: Key.pillMin)
+            switch e.keyCode {
+            case 123, 125: defaults.set(max(5, m - 5), forKey: Key.pillMin)
+            case 124, 126: defaults.set(min(120, m + 5), forKey: Key.pillMin)
+            case 36, 76:
+                self.engine.begin(self.quickTarget(), minutes: Double(m))
+                self.engine.lastApp?.activate()
+            case 53: self.hidePill()
+            default: return e
+            }
+            return nil
+        }
+    }
+
     // MARK: Hot keys (Carbon hot keys need no Accessibility permission)
 
     func hotKey(_ id: UInt32) {
-        if id == 1 { engine.primary() } else { engine.stop() }
+        switch id {
+        case 1: engine.primary()
+        case 2: engine.stop()
+        default: togglePill()
+        }
     }
 
     private func registerHotKeys() {
@@ -1642,6 +1962,8 @@ struct SettingsView: View {
                                     GetApplicationEventTarget(), 0, &hotKeys[0])
         _ = RegisterEventHotKey(UInt32(kVK_Space), UInt32(optionKey | shiftKey), EventHotKeyID(signature: sig, id: 2),
                                 GetApplicationEventTarget(), 0, &hotKeys[1])
+        _ = RegisterEventHotKey(UInt32(kVK_ANSI_T), UInt32(optionKey), EventHotKeyID(signature: sig, id: 3),
+                                GetApplicationEventTarget(), 0, &hotKeys[2])
         hotKeyTaken = a != noErr
     }
 }
@@ -1652,7 +1974,7 @@ defaults.register(defaults: [Key.focusMin: 25, Key.breakMin: 5, Key.longMin: 15,
                              Key.edge: "sand", Key.wander: "dim", Key.rhythm: "classic", Key.askFocus: true,
                              Key.autoBreak: false, Key.autoFocus: false, Key.sound: "Glass", Key.notify: false,
                              Key.barStyle: "ring", Key.grace: 10, Key.dim: "medium", Key.appearance: "light",
-                             Key.trackSites: false])
+                             Key.trackSites: false, Key.pillDuring: "show", Key.pillMin: 25])
 
 MainActor.assumeIsolated {
     let app = NSApplication.shared

@@ -13,12 +13,24 @@ Press **Option + Space** (or click the menu bar ring, then **Start focus…**). 
 
 Leave what counts and, after a grace period, the screen slowly **dims** (or **blurs**) until you come back. Nothing is blocked; it nudges.
 
+## Quick timer
+
+Press **Option + T** (or **Quick timer** in the menu bar). A small pill floats over your windows:
+
+- **Drag the grip** (the three bars on the right) to stretch it: 5 to 120 minutes, in steps of 5. The arrow keys work too.
+- **Click the pill** or press **Return** to start. **Esc** or **×** closes it.
+- **Right-click** for **Focus with apps and sites…**, which opens the full start panel.
+- **Drag the pill** anywhere; it remembers the spot.
+
+While a round runs, the pill turns into a small countdown: click it to pause or resume, right-click for **+5 min**, **Take a break now** and **End**. To keep only the menu bar, set **Timer pill during rounds** to **Hide** in Settings (Option + T still shows it).
+
 ## Control a round
 
 | | |
 |---|---|
 | **⌥ Space** | Start, pause or resume. After a round ends: go on |
 | **⌥ ⇧ Space** | End the round (it still counts) |
+| **⌥ T** | Show or hide the timer pill |
 | Menu bar or window | **Add 5 minutes**, **Take a break now**, **Skip break** |
 
 When a round ends, a panel drops in from the top: **Start break**, **+5 min** or **End** (or turn on automatic breaks and focus in Settings). A sound of your choice plays, with an optional notification.
