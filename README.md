@@ -17,7 +17,7 @@ Leave what counts and, after a grace period, the screen slowly **dims** (or **bl
 
 Press **Option + T** (or **Quick timer** in the menu bar). A small pill floats over your windows:
 
-- **Drag the grip** (the three bars on the right) to stretch it: 5 to 120 minutes, in steps of 5. The arrow keys work too.
+- **Pull the grip** (the three bars on the right) to stretch it like a rubber band: the middle thins as you pull, it gives a little past 5 and 120, and it springs back when you let go. 5 to 120 minutes, in steps of 5. The arrow keys work too.
 - **Click the pill** or press **Return** to start. **Esc** or **×** closes it.
 - **Right-click** for **Focus with apps and sites…**, which opens the full start panel.
 - **Drag the pill** anywhere; it remembers the spot.

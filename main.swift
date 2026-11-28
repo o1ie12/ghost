@@ -978,7 +978,60 @@ struct EndView: View {
 
 // MARK: - Quick timer pill (drag the grip to set a length, then a small countdown while the round runs)
 
-let pillStretch: CGFloat = 2     // points of width per minute, so the bar follows your drag
+let pillStretch: CGFloat = 2     // points of bar width per minute
+let pillPull: CGFloat = 3        // points of drag per minute: more than the bar grows, so it pulls like elastic
+let pillMaxWidth: CGFloat = 48 + 150 + 120 * pillStretch + 48   // widest the pill can stretch, overshoot included
+
+/// Frosted glass that blurs what's behind the window
+struct BehindBlur: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let v = NSVisualEffectView()
+        v.material = .popover
+        v.blendingMode = .behindWindow
+        v.state = .active
+        return v
+    }
+    func updateNSView(_ v: NSVisualEffectView, context: Context) {}
+}
+
+/// A capsule whose middle draws in when it's pulled, like a stretched rubber band
+struct Waist: InsettableShape {
+    var pinch: CGFloat = 0
+    var inset: CGFloat = 0
+    var animatableData: CGFloat {
+        get { pinch }
+        set { pinch = newValue }
+    }
+    func inset(by amount: CGFloat) -> Waist { var w = self; w.inset += amount; return w }
+    func path(in rect: CGRect) -> Path {
+        let r = rect.insetBy(dx: inset, dy: inset)
+        let rad = r.height / 2, k = rad * 0.5523
+        let dip = max(-rad * 0.3, min(pinch, rad * 0.6))
+        var p = Path()
+        p.move(to: CGPoint(x: r.minX + rad, y: r.minY))
+        p.addQuadCurve(to: CGPoint(x: r.maxX - rad, y: r.minY), control: CGPoint(x: r.midX, y: r.minY + 2 * dip))
+        p.addCurve(to: CGPoint(x: r.maxX, y: r.midY), control1: CGPoint(x: r.maxX - rad + k, y: r.minY), control2: CGPoint(x: r.maxX, y: r.midY - k))
+        p.addCurve(to: CGPoint(x: r.maxX - rad, y: r.maxY), control1: CGPoint(x: r.maxX, y: r.midY + k), control2: CGPoint(x: r.maxX - rad + k, y: r.maxY))
+        p.addQuadCurve(to: CGPoint(x: r.minX + rad, y: r.maxY), control: CGPoint(x: r.midX, y: r.maxY - 2 * dip))
+        p.addCurve(to: CGPoint(x: r.minX, y: r.midY), control1: CGPoint(x: r.minX + rad - k, y: r.maxY), control2: CGPoint(x: r.minX, y: r.midY + k))
+        p.addCurve(to: CGPoint(x: r.minX + rad, y: r.minY), control1: CGPoint(x: r.minX, y: r.midY - k), control2: CGPoint(x: r.minX + rad - k, y: r.minY))
+        p.closeSubpath()
+        return p
+    }
+}
+
+/// Ghost's cream, as glass: blur, a cream tint, a soft top highlight and a light rim
+struct Glass<S: InsettableShape>: View {
+    let shape: S
+    var body: some View {
+        ZStack {
+            BehindBlur().clipShape(shape)
+            shape.fill(Theme.bg.opacity(0.74))
+            shape.fill(LinearGradient(colors: [Color.white.opacity(0.22), .clear], startPoint: .top, endPoint: .center))
+            shape.strokeBorder(LinearGradient(colors: [Color.white.opacity(0.75), Theme.hairline], startPoint: .top, endPoint: .bottom), lineWidth: 1)
+        }
+    }
+}
 
 struct PillRing: View {
     let progress: Double
@@ -1001,9 +1054,14 @@ struct PillView: View {
     let onMore: () -> Void
     let onMove: (_ ended: Bool) -> Void
     let onSize: (CGSize) -> Void
+    let onStretch: (Bool) -> Void
     @AppStorage(Key.pillMin) private var minutes = 25
     @State private var dragFrom: Int?
+    @State private var dragWidth: CGFloat?     // the bar's width while you pull it (nil when let go)
+    @State private var pinch: CGFloat = 0      // how far the middle draws in while you pull
     @State private var moved = false
+
+    private func barWidth(_ m: Double) -> CGFloat { 150 + CGFloat(m) * pillStretch }
 
     private var idle: Bool { engine.phase == .idle }
 
@@ -1013,8 +1071,7 @@ struct PillView: View {
                 Image(systemName: sideIcon).font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Theme.ink)
                     .frame(width: 40, height: 40)
-                    .background(Circle().fill(Theme.bg))
-                    .overlay(Circle().strokeBorder(Theme.hairline, lineWidth: 1))
+                    .background(Glass(shape: Circle()))
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
@@ -1022,8 +1079,7 @@ struct PillView: View {
 
             bar
                 .frame(height: 40)
-                .background(Capsule().fill(Theme.bg))
-                .overlay(Capsule().strokeBorder(Theme.hairline, lineWidth: 1))
+                .background(Glass(shape: Waist(pinch: pinch)))
                 .contentShape(Capsule())
                 .gesture(clickOrMove)
                 .contextMenu { menu }
@@ -1032,6 +1088,7 @@ struct PillView: View {
         .background(GeometryReader { g in
             Color.clear.onAppear { onSize(g.size) }.onChange(of: g.size) { _, s in onSize(s) }
         })
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
     }
 
     private var sideIcon: String {
@@ -1058,7 +1115,7 @@ struct PillView: View {
                 grip
             }
             .padding(.leading, 14)
-            .frame(width: 150 + CGFloat(minutes) * pillStretch)
+            .frame(width: dragWidth ?? barWidth(Double(minutes)))
         case .focus, .rest:
             HStack(spacing: 10) {
                 PillRing(progress: engine.progress, color: engine.phase == .rest ? Theme.tertiary : Theme.clay)
@@ -1079,10 +1136,12 @@ struct PillView: View {
         }
     }
 
-    /// Three bars on the right: drag them to stretch the timer
+    /// Three bars on the right: pull them to stretch the timer
     private var grip: some View {
         HStack(spacing: 3) {
-            ForEach(0..<3, id: \.self) { _ in Capsule().fill(Theme.tertiary).frame(width: 2.5, height: 14) }
+            ForEach(0..<3, id: \.self) { _ in
+                Capsule().fill(dragWidth == nil ? Theme.tertiary : Theme.clay).frame(width: 2.5, height: 14)
+            }
         }
         .frame(width: 40, height: 40)
         .contentShape(Rectangle())
@@ -1090,16 +1149,28 @@ struct PillView: View {
         .highPriorityGesture(
             DragGesture(minimumDistance: 0, coordinateSpace: .global)
                 .onChanged { g in
-                    let from = dragFrom ?? minutes
-                    dragFrom = from
-                    let raw = Double(from) + Double(g.translation.width / pillStretch)
-                    let m = min(120, max(5, Int((raw / 5).rounded()) * 5))
+                    if dragFrom == nil { dragFrom = minutes; onStretch(true) }
+                    let from = Double(dragFrom ?? minutes)
+                    let raw = from + Double(g.translation.width / pillPull)        // the bar trails your pointer
+                    let held = min(120, max(5, raw))
+                    let over = (raw - held) * Double(pillPull)                     // pulled past 5 or 120
+                    let give = CGFloat(over.sign == .minus ? -1 : 1) * 36 * CGFloat(1 - exp(-abs(over) / 70))
+                    withAnimation(.interactiveSpring(response: 0.22, dampingFraction: 0.82)) {
+                        dragWidth = barWidth(held) + give
+                        // the harder you pull, the thinner the middle gets (most of all past either end)
+                        pinch = 2.5 + 4 * CGFloat(1 - exp(-abs(Double(g.translation.width)) / 140)) + abs(give) / 7
+                    }
+                    let m = Int((held / 5).rounded()) * 5
                     if m != minutes {
                         minutes = m
                         NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
                     }
                 }
-                .onEnded { _ in dragFrom = nil }
+                .onEnded { _ in
+                    dragFrom = nil
+                    withAnimation(.spring(response: 0.38, dampingFraction: 0.45)) { dragWidth = nil; pinch = 0 }   // snaps back
+                    onStretch(false)
+                }
         )
         .help("Drag to set the length")
     }
@@ -1626,6 +1697,8 @@ struct SettingsView: View {
     private var pill: FloatingPanel?
     private var lastPhase = Engine.Phase.idle
     private var moveStart: (mouse: NSPoint, origin: NSPoint)?
+    private var pillStretching = false
+    private var pillSize = NSSize(width: 248, height: 40)
     private var hotKeyTaken = false
     private var styleObserver: NSObjectProtocol?
 
@@ -1864,6 +1937,8 @@ struct SettingsView: View {
             self?.movePill(ended: ended)
         }, onSize: { [weak self] size in
             self?.sizePill(size)
+        }, onStretch: { [weak self] on in
+            self?.stretchPill(on)
         })
         let p = FloatingPanel(contentRect: NSRect(x: 0, y: 0, width: 250, height: 40),
                               styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -1876,8 +1951,8 @@ struct SettingsView: View {
         p.isReleasedWhenClosed = false
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         let host = FirstClickHost(rootView: view)
-        var size = host.fittingSize                 // measure first, then size the panel by hand (it grows to the right)
-        if size.width < 10 || size.height < 10 { size = NSSize(width: 248, height: 40) }
+        // Sized by hand (it grows to the right); the view reports its real size once it's on screen
+        let size = NSSize(width: 48 + 150 + CGFloat(max(5, defaults.integer(forKey: Key.pillMin))) * pillStretch, height: 40)
         host.sizingOptions = []
         host.frame = NSRect(origin: .zero, size: size)
         p.contentView = host
@@ -1899,9 +1974,26 @@ struct SettingsView: View {
 
     /// Grows to the right (the left edge stays put), so the grip stays under your pointer
     private func sizePill(_ size: CGSize) {
-        guard let p = pill, size.width > 0, p.frame.size != size else { return }
+        if size.width > 0 { pillSize = size }
+        guard !pillStretching, let p = pill, size.width > 0, p.frame.size != size else { return }
         let top = p.frame.maxY
         p.setFrame(NSRect(x: p.frame.minX, y: top - size.height, width: size.width, height: size.height), display: true)
+    }
+
+    /// While you pull the grip the window gets room for the stretch; it fits again once the bar settles
+    private func stretchPill(_ on: Bool) {
+        guard let p = pill else { return }
+        if on {
+            pillStretching = true
+            let top = p.frame.maxY
+            p.setFrame(NSRect(x: p.frame.minX, y: top - p.frame.height, width: pillMaxWidth, height: p.frame.height), display: true)
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in
+                guard let self, self.pillStretching else { return }
+                self.pillStretching = false
+                self.sizePill(self.pillSize)
+            }
+        }
     }
 
     private func movePill(ended: Bool) {
