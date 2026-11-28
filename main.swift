@@ -979,7 +979,9 @@ struct EndView: View {
 // MARK: - Quick timer pill (drag the grip to set a length, then a small countdown while the round runs)
 
 let pillStretch: CGFloat = 2     // points of bar width per minute
-let pillPull: CGFloat = 3        // points of drag per minute: more than the bar grows, so it pulls like elastic
+let pillPull: CGFloat = 2        // points of pointer travel per minute, so the grip stays under the pointer
+let pillGive = 0.6               // the grip moves this fraction of your pointer while you pull: the resistance
+let pillHeavy = 0.18             // and only this much past 5 or 120
 let pillMaxWidth: CGFloat = 48 + 150 + 120 * pillStretch + 48   // widest the pill can stretch, overshoot included
 
 /// Frosted glass that blurs what's behind the window
@@ -1059,6 +1061,8 @@ struct PillView: View {
     @State private var dragFrom: Int?
     @State private var dragWidth: CGFloat?     // the bar's width while you pull it (nil when let go)
     @State private var pinch: CGFloat = 0      // how far the middle draws in while you pull
+    @State private var pulled: CGFloat = 0     // how far the grip has moved (slower than your hand)
+    @State private var lastX: CGFloat = 0
     @State private var moved = false
 
     private func barWidth(_ m: Double) -> CGFloat { 150 + CGFloat(m) * pillStretch }
@@ -1149,26 +1153,47 @@ struct PillView: View {
         .highPriorityGesture(
             DragGesture(minimumDistance: 0, coordinateSpace: .global)
                 .onChanged { g in
-                    if dragFrom == nil { dragFrom = minutes; onStretch(true) }
+                    let handX = g.translation.width
+                    if dragFrom == nil {
+                        dragFrom = minutes; onStretch(true)
+                        pulled = 0; lastX = 0
+                    }
                     let from = Double(dragFrom ?? minutes)
-                    let raw = from + Double(g.translation.width / pillPull)        // the bar trails your pointer
+                    // Resistance: the grip only moves part of the way your pointer does, and much less past either end
+                    let hand = handX - lastX
+                    lastX = handX
+                    let now = from + Double(pulled / pillPull)
+                    let outward = (now >= 120 && hand > 0) || (now <= 5 && hand < 0)
+                    pulled += hand * CGFloat(outward ? pillHeavy : pillGive)
+                    let raw = from + Double(pulled / pillPull)
                     let held = min(120, max(5, raw))
                     let over = (raw - held) * Double(pillPull)                     // pulled past 5 or 120
                     let give = CGFloat(over.sign == .minus ? -1 : 1) * 36 * CGFloat(1 - exp(-abs(over) / 70))
                     withAnimation(.interactiveSpring(response: 0.22, dampingFraction: 0.82)) {
                         dragWidth = barWidth(held) + give
                         // the harder you pull, the thinner the middle gets (most of all past either end)
-                        pinch = 2.5 + 4 * CGFloat(1 - exp(-abs(Double(g.translation.width)) / 140)) + abs(give) / 7
+                        pinch = 2.5 + 4 * CGFloat(1 - exp(-abs(Double(pulled)) / 100)) + abs(give) / 6
                     }
                     let m = Int((held / 5).rounded()) * 5
                     if m != minutes {
                         minutes = m
-                        NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+                        let edge = m == 5 || m == 120
+                        NSHapticFeedbackManager.defaultPerformer.perform(edge ? .levelChange : .alignment, performanceTime: .now)
                     }
                 }
                 .onEnded { _ in
                     dragFrom = nil
-                    withAnimation(.spring(response: 0.38, dampingFraction: 0.45)) { dragWidth = nil; pinch = 0 }   // snaps back
+                    // Let go: a quick kick past the mark (the middle bulges), then a springy settle
+                    let dir: CGFloat = pulled >= 0 ? 1 : -1
+                    let rest = barWidth(Double(minutes))
+                    let past = (dragWidth ?? rest) - rest
+                    withAnimation(.easeOut(duration: 0.07)) {
+                        dragWidth = rest + (abs(past) > 6 ? -past * 0.35 : 9 * dir)
+                        pinch = -3.5
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.07) {
+                        withAnimation(.spring(response: 0.42, dampingFraction: 0.32)) { dragWidth = nil; pinch = 0 }
+                    }
                     onStretch(false)
                 }
         )
@@ -1988,7 +2013,7 @@ struct SettingsView: View {
             let top = p.frame.maxY
             p.setFrame(NSRect(x: p.frame.minX, y: top - p.frame.height, width: pillMaxWidth, height: p.frame.height), display: true)
         } else {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
                 guard let self, self.pillStretching else { return }
                 self.pillStretching = false
                 self.sizePill(self.pillSize)
