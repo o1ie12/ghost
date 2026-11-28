@@ -3,10 +3,10 @@
 set -e
 cd "$(dirname "$0")"
 APP="build/Ghost.app"
-VERSION="1.0"
+VERSION="2.0"
 rm -rf build && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-swiftc -O -target arm64-apple-macos14.0 main.swift -o "$APP/Contents/MacOS/Ghost"
+nice -n 19 swiftc -O -target arm64-apple-macos14.0 main.swift -o "$APP/Contents/MacOS/Ghost"
 
 # App icon from icon/icon-1024.png
 ICONSET=build/AppIcon.iconset && mkdir -p $ICONSET
@@ -28,6 +28,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><true/>
+  <key>NSAppleEventsUsageDescription</key><string>Ghost reads the domain of the front browser tab during a focus round, to check it against the sites that count. Full links are never saved.</string>
 </dict></plist>
 PLIST
 
